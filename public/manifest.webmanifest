@@ -1,0 +1,20 @@
+{
+  "name": "Daily Challenge — 60 Second Brain Game",
+  "short_name": "Daily Challenge",
+  "description": "Test your knowledge with a 60-second daily trivia challenge. Earn XP, build streaks, and climb the leaderboard.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#020617",
+  "theme_color": "#0ea5e9",
+  "categories": ["games", "education", "entertainment"],
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

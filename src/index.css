@@ -1,0 +1,48 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light dark;
+}
+
+html {
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  @apply bg-ink-100 text-ink-900 antialiased;
+  font-feature-settings: 'cv11', 'ss01';
+}
+
+.dark body {
+  @apply bg-ink-950 text-ink-100;
+}
+
+/* Hide scrollbars on horizontal scroll regions while keeping scroll */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+@layer components {
+  .card {
+    @apply rounded-2xl border border-ink-200/70 bg-white shadow-card dark:border-ink-800 dark:bg-ink-900;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl font-semibold transition-all duration-200 active:scale-95 disabled:cursor-not-allowed disabled:opacity-60 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-ink-950;
+  }
+  .btn-primary {
+    @apply btn bg-primary-600 px-5 py-3 text-white hover:bg-primary-700 shadow-glow;
+  }
+  .btn-accent {
+    @apply btn bg-accent-500 px-5 py-3 text-white hover:bg-accent-600 shadow-glow-accent;
+  }
+  .btn-ghost {
+    @apply btn bg-ink-100 px-5 py-3 text-ink-800 hover:bg-ink-200 dark:bg-ink-800 dark:text-ink-100 dark:hover:bg-ink-700;
+  }
+  .btn-outline {
+    @apply btn border border-ink-300 bg-transparent px-5 py-3 text-ink-800 hover:bg-ink-100 dark:border-ink-700 dark:text-ink-100 dark:hover:bg-ink-800;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-semibold;
+  }
+}
