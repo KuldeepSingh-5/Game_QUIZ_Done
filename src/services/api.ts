@@ -92,6 +92,34 @@ function mapSubmitResultToStats(r: SubmitGameResult): UserStats {
   };
 }
 
+function mapSubmitRpcRow(row: Record<string, unknown>): SubmitGameResult {
+  return {
+    playerId: String(row.player_id ?? row.playerId ?? ''),
+    username: String(row.username ?? ''),
+    xp: Number(row.xp ?? 0),
+    level: Number(row.level ?? 1),
+    streak: Number(row.streak ?? 0),
+    highestScore: Number(row.highest_score ?? row.highestScore ?? 0),
+    lastPlayedDate: String(row.last_played_date ?? row.lastPlayedDate ?? ''),
+    todayBestScore: Number(row.today_best_score ?? row.todayBestScore ?? 0),
+    todayDate: String(row.today_date ?? row.todayDate ?? ''),
+    totalGames: Number(row.total_games ?? row.totalGames ?? 0),
+    totalCorrectAnswers: Number(
+      row.total_correct_answers ?? row.totalCorrectAnswers ?? 0
+    ),
+    score: Number(row.score ?? 0),
+    xpEarned: Number(row.xp_earned ?? row.xpEarned ?? 0),
+    gameResultId: String(row.game_result_id ?? row.gameResultId ?? '') || null,
+  };
+}
+
+function isUuid(value: string | null): value is string {
+  return Boolean(
+    value &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+  );
+}
+
 function randomGuestName(): string {
   const adjectives = ['Swift', 'Bright', 'Clever', 'Bold', 'Calm', 'Keen', 'Wise', 'Quick'];
   const nouns = ['Fox', 'Owl', 'Hawk', 'Bear', 'Wolf', 'Cat', 'Raven', 'Lion'];
@@ -263,14 +291,39 @@ export const api = {
       throw new Error(friendlyError(error, 'Could not submit your game. Please try again.'));
     }
 
-    const row = (Array.isArray(data) ? data[0] : data) as SubmitGameResult;
+    const rawRow = (Array.isArray(data) ? data[0] : data) as Record<string, unknown>;
+    const row = mapSubmitRpcRow(rawRow);
+
+    // Older deployed submit_game functions inserted the row but did not return its ID.
+    // Recover that existing row rather than creating a second game result.
+    if (!isUuid(row.gameResultId)) {
+      const { data: savedResult, error: savedResultError } = await supabase
+        .from('game_results')
+        .select('id')
+        .eq('player_id', playerId)
+        .eq('score', row.score)
+        .eq('correct_answers', result.correctAnswers)
+        .eq('attempted', result.attemptedQuestions)
+        .eq('xp_earned', row.xpEarned)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (!savedResultError && savedResult?.id) {
+        row.gameResultId = savedResult.id;
+      }
+    }
+
+    if (!isUuid(row.gameResultId)) {
+      throw new Error('Game submission did not return a game result ID. Please try again.');
+    }
     const stats = mapSubmitResultToStats(row);
     writeStatsCache(stats);
 
     return {
       stats,
       result: {
-        id: row.gameResultId ?? null,
+        id: row.gameResultId,
         score: row.score,
         correctAnswers: result.correctAnswers,
         attemptedQuestions: result.attemptedQuestions,

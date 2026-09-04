@@ -1,25 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { AdMob, RewardAdPluginEvents } from '@capacitor-community/admob';
 import { Play, Loader2, AlertCircle, CheckCircle, Gift, X, Coins } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { adConfig } from '@/config/ads';
 import { useAdContext } from '@/context/AdContext';
 import type { RewardedAdReward } from '@/types/ads';
 
-const AD_DURATION_S = 8;
-
 type Phase = 'idle' | 'watching' | 'verifying' | 'success' | 'error' | 'already-claimed';
 
-/**
- * Rewarded ad: "Watch an ad to get a second chance".
- *
- * Security model:
- *  - The reward is NEVER granted by the frontend. After the simulated ad
- *    finishes, the frontend calls `claim_rewarded_ad` on the server, which
- *    validates the request, enforces one-reward-per-game, computes the
- *    reward server-side, and returns updated stats. The client cannot pass
- *    in XP or score values.
- *  - If the user closes before the ad completes, no claim is made.
- */
 export function RewardedAd({
   open,
   playerId,
@@ -35,71 +23,117 @@ export function RewardedAd({
 }) {
   const { adsActive, settings } = useAdContext();
   const [phase, setPhase] = useState<Phase>('idle');
-  const [countdown, setCountdown] = useState(AD_DURATION_S);
   const [errorMsg, setErrorMsg] = useState('');
   const [earnedReward, setEarnedReward] = useState<RewardedAdReward | null>(null);
+  const claimStartedRef = useRef(false);
+  const claimCompletedRef = useRef(false);
+  const playerIdRef = useRef(playerId);
+  const gameResultIdRef = useRef(gameResultId);
+  const onRewardRef = useRef(onReward);
+
+  useEffect(() => {
+    playerIdRef.current = playerId;
+    gameResultIdRef.current = gameResultId;
+    onRewardRef.current = onReward;
+  }, [playerId, gameResultId, onReward]);
 
   const rewardedAvailable =
-    adConfig.enabled && adsActive && (settings?.rewardedEnabled ?? adConfig.rewardedEnabled);
+    adConfig.enabled &&
+    adsActive &&
+    !!adConfig.unitIds.rewarded &&
+    (settings?.rewardedEnabled ?? adConfig.rewardedEnabled);
 
   useEffect(() => {
     if (open) {
+      console.log('[REWARDED AD] modal opened', {
+        playerId,
+        gameResultId,
+      });
       setPhase('idle');
-      setCountdown(AD_DURATION_S);
       setErrorMsg('');
       setEarnedReward(null);
+      claimStartedRef.current = false;
+      claimCompletedRef.current = false;
     }
-  }, [open]);
+  }, [gameResultId, open, playerId]);
 
-  useEffect(() => {
-    if (phase !== 'watching') return;
-    const tick = setInterval(() => {
-      setCountdown((c) => {
-        if (c <= 1) {
-          clearInterval(tick);
-          void verifyAndClaim();
-          return 0;
-        }
-        return c - 1;
-      });
-    }, 1000);
-    return () => clearInterval(tick);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase]);
-
-  const startWatching = () => {
-    if (!rewardedAvailable) return;
-    setPhase('watching');
-    setCountdown(AD_DURATION_S);
-  };
-
-  const verifyAndClaim = async () => {
+  const verifyAndClaim = useCallback(async () => {
+    if (claimStartedRef.current || claimCompletedRef.current) return;
+    claimStartedRef.current = true;
     setPhase('verifying');
-    if (!playerId || !gameResultId) {
+
+    const currentPlayerId = playerIdRef.current;
+    const currentGameResultId = gameResultIdRef.current;
+
+    console.log('[REWARDED AD] ON USER EARNED REWARD');
+    console.log('[REWARDED AD] PLAYER ID:', currentPlayerId);
+    console.log('[REWARDED AD] GAME RESULT ID:', currentGameResultId);
+
+    if (!currentPlayerId && !currentGameResultId) {
+      console.error('[REWARDED AD] missing state: currentPlayerId && currentGameResultId both null');
       setPhase('error');
-      setErrorMsg('Missing game information. Please play again.');
+      setErrorMsg('Player ID and Game Result ID are missing.');
+      return;
+    }
+
+    if (!currentPlayerId) {
+      console.error('[REWARDED AD] missing state: currentPlayerId is null');
+      setPhase('error');
+      setErrorMsg('Player ID is missing.');
+      return;
+    }
+
+    if (
+      !currentGameResultId ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(currentGameResultId)
+    ) {
+      console.error('[REWARDED AD] missing state: currentGameResultId is null/invalid', {
+        currentGameResultId,
+      });
+      setPhase('error');
+      setErrorMsg('Game Result ID is missing.');
       return;
     }
 
     try {
-      const { data, error } = await supabase.rpc('claim_rewarded_ad', {
-        p_player_id: playerId,
-        p_game_result_id: gameResultId,
+      console.log('[REWARDED AD] CLAIM REWARD with payload', {
+        p_player_id: currentPlayerId,
+        p_game_result_id: currentGameResultId,
       });
 
+      const { data, error } = await supabase.rpc('claim_rewarded_ad', {
+        p_player_id: currentPlayerId,
+        p_game_result_id: currentGameResultId,
+      });
+
+      console.log('[REWARDED AD] Reward Claim Response:', { data, error });
+
       if (error) {
+        console.error('Reward Claim Error:', error);
+
         const msg = (error.message || '').toLowerCase();
+
         if (msg.includes('already claimed')) {
+          claimCompletedRef.current = true;
           setPhase('already-claimed');
           return;
         }
+
         if (msg.includes('not available')) {
           setPhase('error');
           setErrorMsg('Rewarded ads are not available right now.');
           return;
         }
+
         setPhase('error');
-        setErrorMsg('Could not verify the ad reward. Please try again.');
+        setErrorMsg(error.message || 'Could not verify the ad reward.');
+        return;
+      }
+
+      if (!data) {
+        console.error('Reward Claim returned no data');
+        setPhase('error');
+        setErrorMsg('Reward claim returned no data.');
         return;
       }
 
@@ -111,6 +145,8 @@ export function RewardedAd({
         highest_score: number;
       };
 
+      console.log('Reward Data:', row);
+
       const reward: RewardedAdReward = {
         rewardXp: Number(row.reward_xp) || 0,
         rewardScoreBonus: Number(row.reward_score_bonus) || 0,
@@ -118,12 +154,88 @@ export function RewardedAd({
         level: Number(row.level) || 1,
         highestScore: Number(row.highest_score) || 0,
       };
+
+      console.log('[REWARDED AD] REWARD SUCCESS', {
+        xpBefore: Number(row.xp) - Number(row.reward_xp || 0),
+        xpAdded: Number(row.reward_xp) || 0,
+        xpAfter: Number(row.xp) || 0,
+        reward,
+      });
+
       setEarnedReward(reward);
-      onReward(reward);
+      claimCompletedRef.current = true;
+      onRewardRef.current(reward);
       setPhase('success');
-    } catch {
+    } catch (error) {
+      console.error('Reward Claim Exception:', error);
       setPhase('error');
-      setErrorMsg('Something went wrong. Please try again.');
+      setErrorMsg(
+        error instanceof Error
+          ? error.message
+          : 'Something went wrong. Please try again.'
+      );
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+
+    let active = true;
+    let listener: { remove: () => Promise<void> } | undefined;
+
+    const registerRewardListener = async () => {
+      listener = await AdMob.addListener(
+        RewardAdPluginEvents.Rewarded,
+        () => {
+          if (active) void verifyAndClaim();
+        }
+      );
+    };
+
+    void registerRewardListener();
+
+    return () => {
+      active = false;
+      void listener?.remove();
+    };
+  }, [open, verifyAndClaim]);
+
+  const startWatching = async () => {
+    if (!rewardedAvailable) {
+      setPhase('error');
+      setErrorMsg('Rewarded ads are currently unavailable.');
+      return;
+    }
+
+    try {
+      console.log('[REWARDED AD] WATCH AD CLICKED', {
+        playerId,
+        gameResultId,
+      });
+      setPhase('watching');
+      setErrorMsg('');
+
+      await AdMob.initialize();
+      console.log('[REWARDED AD] REWARDED AD LOADED');
+
+      await AdMob.prepareRewardVideoAd({
+        adId: adConfig.unitIds.rewarded,
+        isTesting: true,
+      });
+
+      console.log('[REWARDED AD] REWARDED AD SHOWN');
+      const reward = await AdMob.showRewardVideoAd();
+      console.log('[REWARDED AD] AD SHOW RESULT', reward);
+
+      if (reward) await verifyAndClaim();
+    } catch (error) {
+      console.error('Rewarded Ad Error:', error);
+      setPhase('error');
+      setErrorMsg(
+        error instanceof Error
+          ? error.message
+          : 'The ad could not be completed. Please try again.'
+      );
     }
   };
 
@@ -153,50 +265,55 @@ export function RewardedAd({
         <div className="grid h-11 w-11 place-items-center rounded-xl bg-accent-500/15 text-accent-500">
           <Coins size={22} />
         </div>
+
         <div className="flex-1">
-          <h3 className="font-display text-base font-bold">Get a second chance</h3>
+          <h3 className="font-display text-base font-bold">
+            Get a second chance
+          </h3>
+
           <p className="text-xs text-ink-500 dark:text-ink-400">
-            Watch a short ad to earn bonus XP for this game.
+            Watch a rewarded ad to earn bonus XP for this game.
           </p>
         </div>
       </div>
 
       {phase === 'idle' && (
-        <button onClick={startWatching} className="btn-accent w-full">
-          <Play size={18} /> Watch ad to earn
+        <button
+          onClick={startWatching}
+          className="btn-accent w-full"
+        >
+          <Play size={18} />
+          Watch ad to earn
         </button>
       )}
 
       {phase === 'watching' && (
-        <div className="rounded-xl border border-ink-200 bg-ink-50 p-4 dark:border-ink-800 dark:bg-ink-950">
-          <div className="mb-3 flex items-center justify-between">
-            <span className="text-xs font-bold uppercase tracking-wide text-ink-400">
-              Advertisement
-            </span>
-            <span className="text-xs font-semibold text-ink-500">{countdown}s</span>
-          </div>
-          <div className="flex h-24 items-center justify-center rounded-lg bg-gradient-to-br from-accent-500/10 to-primary-500/10">
-            <div className="flex flex-col items-center gap-1 text-ink-500 dark:text-ink-400">
-              <Loader2 size={22} className="animate-spin text-accent-500" />
-              <span className="text-xs font-medium">Ad playing…</span>
-            </div>
-          </div>
-          <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-ink-200 dark:bg-ink-800">
-            <div
-              className="h-full rounded-full bg-accent-500 transition-all duration-1000 ease-linear"
-              style={{ width: `${((AD_DURATION_S - countdown) / AD_DURATION_S) * 100}%` }}
-            />
-          </div>
-          <p className="mt-2 text-center text-[11px] text-ink-400">
-            Please keep the ad playing to earn your reward.
+        <div className="flex flex-col items-center gap-3 py-6 text-center">
+          <Loader2
+            size={32}
+            className="animate-spin text-accent-500"
+          />
+
+          <p className="text-sm font-semibold">
+            Loading rewarded ad...
+          </p>
+
+          <p className="text-xs text-ink-500 dark:text-ink-400">
+            Please watch the ad completely to receive your reward.
           </p>
         </div>
       )}
 
       {phase === 'verifying' && (
         <div className="flex flex-col items-center gap-2 py-6 text-ink-500 dark:text-ink-400">
-          <Loader2 size={24} className="animate-spin text-primary-500" />
-          <span className="text-sm font-medium">Verifying reward…</span>
+          <Loader2
+            size={24}
+            className="animate-spin text-primary-500"
+          />
+
+          <span className="text-sm font-medium">
+            Verifying reward...
+          </span>
         </div>
       )}
 
@@ -205,12 +322,21 @@ export function RewardedAd({
           <div className="grid h-12 w-12 place-items-center rounded-full bg-success-500/15 text-success-500">
             <CheckCircle size={26} />
           </div>
-          <p className="font-display text-base font-bold">Reward earned!</p>
+
+          <p className="font-display text-base font-bold">
+            Reward earned!
+          </p>
+
           <p className="text-sm text-success-600 dark:text-success-400">
             +{earnedReward.rewardXp} bonus XP added to your account.
           </p>
-          <button onClick={onClose} className="btn-primary mt-2 w-full">
-            <CheckCircle size={16} /> Collect
+
+          <button
+            onClick={onClose}
+            className="btn-primary mt-2 w-full"
+          >
+            <CheckCircle size={16} />
+            Collect
           </button>
         </div>
       )}
@@ -220,11 +346,21 @@ export function RewardedAd({
           <div className="grid h-12 w-12 place-items-center rounded-full bg-ink-100 text-ink-400 dark:bg-ink-800">
             <CheckCircle size={26} />
           </div>
-          <p className="font-display text-sm font-bold">Already claimed</p>
+
+          <p className="font-display text-sm font-bold">
+            Already claimed
+          </p>
+
           <p className="text-xs text-ink-500 dark:text-ink-400">
             You've already earned the reward for this game.
           </p>
-          <button onClick={onClose} className="btn-ghost mt-1 w-full">Close</button>
+
+          <button
+            onClick={onClose}
+            className="btn-ghost mt-1 w-full"
+          >
+            Close
+          </button>
         </div>
       )}
 
@@ -233,14 +369,32 @@ export function RewardedAd({
           <div className="grid h-12 w-12 place-items-center rounded-full bg-error-500/15 text-error-500">
             <AlertCircle size={26} />
           </div>
-          <p className="font-display text-sm font-bold">Couldn't claim reward</p>
-          <p className="text-xs text-ink-500 dark:text-ink-400">{errorMsg}</p>
+
+          <p className="font-display text-sm font-bold">
+            Couldn't claim reward
+          </p>
+
+          <p className="text-xs text-ink-500 dark:text-ink-400">
+            {errorMsg}
+          </p>
+
           <div className="mt-1 flex w-full gap-2">
-            <button onClick={() => setPhase('idle')} className="btn-outline flex-1">
+            <button
+              onClick={() => {
+                claimStartedRef.current = false;
+                setPhase('idle');
+              }}
+              className="btn-outline flex-1"
+            >
               Try again
             </button>
-            <button onClick={onClose} className="btn-ghost flex-1">
-              <X size={16} /> Close
+
+            <button
+              onClick={onClose}
+              className="btn-ghost flex-1"
+            >
+              <X size={16} />
+              Close
             </button>
           </div>
         </div>

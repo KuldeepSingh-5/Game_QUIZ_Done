@@ -29,7 +29,7 @@ export interface GameQuestion {
 }
 
 export interface GameResult {
-  id: string | null;
+  id: string;
   score: number;
   correctAnswers: number;
   attemptedQuestions: number;
